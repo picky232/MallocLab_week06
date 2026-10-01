@@ -9,6 +9,19 @@
  * NOTE TO STUDENTS: Replace this header comment with your own header
  * comment that gives a high level description of your solution.
  */
+
+/* 한국어 번역
+ * mm-naive.c - 가장 빠르지만 메모리 효율은 가장 낮은 malloc 패키지.
+ *
+ * 이 단순한 방식에서는 brk 포인터를 단순히 증가시키는 방식으로
+ * 블록을 할당한다. 블록은 순수한 payload로만 구성된다.
+ * header나 footer는 존재하지 않는다.
+ * 블록들은 병합(coalesce)되거나 재사용되지 않는다.
+ * realloc은 mm_malloc과 mm_free를 직접 사용하여 구현된다.
+ *
+ * 학생 참고: 이 헤더 주석을 여러분이 작성한 해결 방법을
+ * 전체적으로 설명하는 자신만의 헤더 주석으로 교체하시오.
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
@@ -24,11 +37,11 @@
  ********************************************************/
 team_t team = {
     /* Team name */
-    "ateam",
+    "Ultra hobi",
     /* First member's full name */
-    "Harry Bovik",
+    "picky232",
     /* First member's email address */
-    "bovik@cs.cmu.edu",
+    "mistick0215@gmail.com",
     /* Second member's full name (leave blank if none) */
     "",
     /* Second member's email address (leave blank if none) */
