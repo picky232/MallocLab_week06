@@ -48,18 +48,50 @@ team_t team = {
     ""};
 
 /* single word (4) or double word (8) alignment */
-#define ALIGNMENT 8
+#define ALIGNMENT 8 // 8바이트 정렬
 
 /* rounds up to the nearest multiple of ALIGNMENT */
-#define ALIGN(size) (((size) + (ALIGNMENT - 1)) & ~0x7)
+// 사용자가 요청한 size를 넣고 +7해서 8의 배수로 만들어줌. ~0x7로 비트 연산해서 하위 3비트 버림
+#define ALIGN(size) (((size) + (ALIGNMENT - 1)) & ~0x7) // malloc 크기 세기
 
-#define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
+#define SIZE_T_SIZE (ALIGN(sizeof(size_t))) // 
 
+#define WSIZE      4          // 워드, 헤더/푸터 크기(바이트)
+#define DSIZE      8          // 이중 워드 크기(바이트)
+#define CHUNKSIZE  (1<<12)    // 힙을 이 크기(4KB)만큼 확장 - 비트 연산 << 오른쪽 12비트(4096)만큼 이동 4KB
+#define MAX(x, y)  ((x) > (y)? (x) : (y)) // X, Y중 더 큰쪽을 돌려주는 매크로
+
+#define PACK(size, alloc)  ((size) | (alloc))      // 크기와 할당 비트를 한 워드로 합침
+
+#define GET(p)       (*(unsigned int *)(p))        // 주소 p의 워드 읽기
+#define PUT(p, val)  (*(unsigned int *)(p) = (val))// 주소 p에 워드 쓰기
+
+#define GET_SIZE(p)   (GET(p) & ~0x7)              // 크기 필드
+#define GET_ALLOC(p)  (GET(p) & 0x1)               // 할당 비트
+
+#define HDRP(bp)  ((char *)(bp) - WSIZE)                              // 헤더 주소
+#define FTRP(bp)  ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE)         // 푸터 주소
+
+#define NEXT_BLKP(bp)  ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))  // 다음 블록
+#define PREV_BLKP(bp)  ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))  // 이전 블록
+
+
+static char *heap_listp;   // 힙의 시작(프롤로그 블록)을 가리키는 포인터
 /*
  * mm_init - initialize the malloc package.
  */
 int mm_init(void)
 {
+    if((heap_listp = mem_sbrk(4*WSIZE)) == (void *)-1)
+        return -1;
+    PUT(heap_listp, 0);                            // 정렬 패딩
+    PUT(heap_listp + (1*WSIZE), PACK(DSIZE, 1));   // 프롤로그 헤더
+    PUT(heap_listp + (2*WSIZE), PACK(DSIZE, 1));   // 프롤로그 푸터
+    PUT(heap_listp + (3*WSIZE), PACK(0, 1));       // 에필로그 헤더
+    heap_listp += (2*WSIZE);                       // 프롤로그 블록의 payload 위치로 이동
+
+    if(extend_heap(CHUNKSIZE/WSIZE)==NULL)
+        return -1;
     return 0;
 }
 
