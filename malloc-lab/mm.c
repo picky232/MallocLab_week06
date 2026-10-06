@@ -87,6 +87,7 @@ static void *extend_heap(size_t words);
 void *mm_malloc(size_t size);
 void mm_free(void *ptr);
 void *mm_realloc(void *ptr, size_t size);
+static void *coalesce(void *bp);
 
 /*
  * mm_init - initialize the malloc package.
@@ -107,6 +108,7 @@ int mm_init(void)
     return 0;
 }
 
+// 새 가용블록으로 힙 확장
 static void *extend_heap(size_t words) { // 워드 개수 인자로 들어감
     char *bp; // block pointer
     size_t size; // 
@@ -120,12 +122,44 @@ static void *extend_heap(size_t words) { // 워드 개수 인자로 들어감
     return coalesce(bp);
 }
 
+// mm_free 블록을 반환하고 경계태그 연결을 사용해서 상수 시간에 인접 가용 블록들과 통합함
+static void *coalesce(void *bp)
+{
+    size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp))); // 할당 여부 확인
+    size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp))); // 할당 여부 확인
+    size_t size = GET_SIZE(HDRP(bp)); // bp 블록 크기
+
+    if(prev_alloc && next_alloc){
+        return bp;
+    }
+    else if(prev_alloc && !next_alloc){
+        size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
+        PUT(HDRP(bp), PACK(size, 0));
+        PUT(FTRP(bp), PACK(size, 0));
+    }
+    else if(!prev_alloc && next_alloc){
+        size += GET_SIZE(HDRP(PREV_BLKP(bp)));
+        PUT(FTRP(bp), PACK(size, 0));
+        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
+        bp = PREV_BLKP(bp);
+    }
+    else{
+        size += GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(FTRP(NEXT_BLKP(bp)));
+        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
+        PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
+        bp = PREV_BLKP(bp);
+    }
+    return bp;
+}
+
 /*
  * mm_malloc - Allocate a block by incrementing the brk pointer.
  *     Always allocate a block whose size is a multiple of the alignment.
  */
 void *mm_malloc(size_t size)
 {
+    size_t asize;
+    size_t extendsize;
     int newsize = ALIGN(size + SIZE_T_SIZE);
     void *p = mem_sbrk(newsize);
     if (p == (void *)-1)
