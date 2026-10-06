@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# test - mm.c 를 빌드하고 mdriver 로 테스트한 뒤, 결과를 막대그래프로 보여 주는 명령
+#
+# 사용법:
+#   ./test                    기본 trace 전체 (config.h 의 DEFAULT_TRACEFILES)
+#   ./test 파일명             trace 하나 (예: ./test short1-bal.rep, ./test amptjp-bal)
+#   ./test 파일1 파일2 ...    지정한 trace 여러 개를 각각 실행
+#   ./test -h                 도움말
+#
+# 파일명은 현재 폴더 또는 traces/ 폴더에서 찾고, .rep 는 생략해도 된다.
+# 참고: 쉘에는 test 라는 내장 명령이 있으므로 반드시 ./test 로 실행할 것.
+#
+# 구성:  test(실행)  →  tools/parse.awk(mdriver 출력 해석)  →  tools/render.awk(그래프 출력)
+# mdriver.c / mm.c / Makefile 등 기존 파일은 수정하지 않는다.
+
+set -u
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$DIR" || exit 1
+
+usage() {
+    sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+# ---------- 인자 / 색상 ----------
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+    usage
+    exit 0
+fi
+
+COLOR=0
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then COLOR=1; fi
+
+red()  { if [ "$COLOR" = 1 ]; then printf '\033[31m%s\033[0m\n' "$*"; else printf '%s\n' "$*"; fi; }
+dim()  { if [ "$COLOR" = 1 ]; then printf '\033[2m%s\033[0m\n' "$*"; else printf '%s\n' "$*"; fi; }
+
+for f in tools/parse.awk tools/render.awk; do
+    [ -f "$f" ] || { red "필요한 파일이 없습니다: $f"; exit 1; }
+done
+
+# ---------- 1) 빌드 ----------
+if ! BUILD_OUT=$(make 2>&1); then
+    red "빌드 실패 - make 출력(마지막 30줄):"
+    printf '%s\n' "$BUILD_OUT" | tail -n 30
+    exit 1
+fi
+# mm.c 에서 난 경고는 보여 준다
+MM_WARN=$(printf '%s\n' "$BUILD_OUT" | grep -E '^mm\.c:.*warning' || true)
+
+# ---------- 보조 함수 ----------
+# config.h 의 기본 trace 이름 목록(쉼표 구분)
+default_names() {
+    grep -o '"[^"]*\.rep"' config.h | tr -d '"' | paste -sd, -
+}
+
+# 입력한 이름을 실제 파일 경로로 바꿈
+resolve() {
+    local c
+    for c in "$1" "$1.rep" "traces/$1" "traces/$1.rep"; do
+        if [ -f "$c" ]; then printf '%s\n' "$c"; return 0; fi
+    done
+    return 1
+}
+
+# mdriver 실행. 결과는 OUT(출력), CODE(종료 코드)에 저장
+# (세그폴트 같은 쉘의 종료 메시지는 숨긴다)
+run_driver() {
+    { OUT=$(./mdriver "$@" 2>&1); CODE=$?; } 2>/dev/null
+}
+
+# 정상적으로 결과 표까지 출력했는지
+ok_run() {
+    [ "$CODE" -lt 128 ] && printf '%s\n' "$OUT" | grep -q '^Results for mm malloc'
+}
+
+emit_note()  { printf 'NOTE\t%s\n' "$1"; }
+emit_crash() { printf 'ROW\t%d\t%s\tcrash\t-\t-\t-\t-\n' "$1" "$2"; }
+
+# trace 파일 목록을 하나씩 따로 실행해서 ROW 만 모음
+# 인자: 시작 번호, 경로...
+run_each() {
+    local i="$1" p nm
+    shift
+    for p in "$@"; do
+        nm=$(basename "$p")
+        run_driver -v -f "$p"
+        if ok_run; then
+            printf '%s\n' "$OUT" | awk -v names="$nm" -v base="$i" -v rowsonly=1 -f tools/parse.awk
+        else
+            emit_crash "$i" "$nm"
+        fi
+        i=$((i + 1))
+    done
+}
+
+# ---------- 2) 테스트 실행 → 중간 형식 ----------
+generate() {
+    local paths=() a p
+
+    if [ "$#" -eq 0 ] || { [ "$#" -eq 1 ] && [ "$1" = "all" ]; }; then
+        # ----- 기본 trace 전체 -----
+        local names n
+        names=$(default_names)
+        local cnt
+        cnt=$(printf '%s\n' "$names" | tr ',' '\n' | wc -l | tr -d ' ')
+        printf 'HEAD\t%s\n' "mm 테스트 - 기본 trace 전체 (${cnt}개)"
+        [ -n "$MM_WARN" ] && emit_note "mm.c 컴파일 경고가 있습니다 (예: $(printf '%s\n' "$MM_WARN" | head -n 1 | cut -c1-70))"
+
+        run_driver -v
+        if ok_run; then
+            printf '%s\n' "$OUT" | awk -v names="$names" -f tools/parse.awk
+        else
+            emit_note "mdriver 가 비정상 종료(종료 코드 $CODE)되어 trace를 하나씩 따로 실행했습니다 (총점은 계산 불가)"
+            for n in $(printf '%s' "$names" | tr ',' ' '); do paths+=("traces/$n"); done
+            run_each 0 "${paths[@]}"
+        fi
+        return
+    fi
+
+    # ----- 지정한 trace -----
+    for a in "$@"; do
+        p=$(resolve "$a")   # 존재 여부는 호출 전에 이미 검사했음
+        paths+=("$p")
+    done
+    [ -n "$MM_WARN" ] && emit_note "mm.c 컴파일 경고가 있습니다 (예: $(printf '%s\n' "$MM_WARN" | head -n 1 | cut -c1-70))"
+
+    if [ "${#paths[@]}" -eq 1 ]; then
+        local nm
+        nm=$(basename "${paths[0]}")
+        printf 'HEAD\t%s\n' "mm 테스트 - $nm"
+        run_driver -v -f "${paths[0]}"
+        if ok_run; then
+            printf '%s\n' "$OUT" | awk -v names="$nm" -f tools/parse.awk
+        else
+            emit_crash 0 "$nm"
+        fi
+    else
+        printf 'HEAD\t%s\n' "mm 테스트 - trace ${#paths[@]}개 (개별 실행)"
+        run_each 0 "${paths[@]}"
+    fi
+}
+
+# ---------- 3) 그래프로 출력 ----------
+# 인자 검사는 파이프(서브쉘) 밖에서 해야 exit 이 스크립트 전체에 적용된다
+if [ "$#" -gt 0 ] && [ "${1}" != "all" ]; then
+    for arg in "$@"; do
+        if ! resolve "$arg" >/dev/null; then
+            red "trace 파일을 찾을 수 없습니다: $arg  (현재 폴더, traces/ 에서 찾음)" >&2
+            exit 2
+        fi
+    done
+fi
+
+# 막대 모양: 기본 line(━ ─). 예전 모양(█ ░)은 MM_BAR=block ./test
+generate "$@" | awk -v color="$COLOR" -v style="${MM_BAR:-line}" -f tools/render.awk
+exit "${PIPESTATUS[1]}"
