@@ -77,8 +77,19 @@ team_t team = {
 #define NEXT_BLKP(bp)  ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE))) // 다음 블록의 블록 포인터 - 현재블록의 헤더를 읽은후 크기만큼 더함
 #define PREV_BLKP(bp)  ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE))) // 이전 블록의 블록 포인터 - 푸터를 읽어서 이전 블록 크기 구함
 
+/*
+    이중 연결 리스트 형태로 할껀데 
+    헤더 | pred(이전블록 포인터) | succ(다음블록 포인터) | 패딩 | 푸터 
+    처럼 쓸꺼여서 아래와 같은 매크로 사용함
+*/
+#define PUT_PRED(bp, val) (*(void **)(bp)) = val // void* 로 캐스팅된 bp에 포인터를 담을꺼니까 이중 포인터로 캐스팅 함. 그리고 참조로 담은 주소 데이터가 반환됨
+#define PUT_SUCC(bp, val) (*(void **)((char *)(bp)+sizeof(void *))) = val
+
+#define READ_PRED(bp) (*(void **)(bp)) // 이전 블록 포인터
+#define READ_SUCC(bp) (*(void **)((char *)(bp) + sizeof(void *)))
 
 static char *heap_listp;   // 블록 포인터 - 프롤로그의 bp
+static char *free_listp = NULL; // 가용 리스트 헤더
 
 // 함수들 정의
 int mm_init(void);
@@ -90,12 +101,16 @@ static void *coalesce(void *bp);
 static void place(void *bp, size_t size);
 static void *find_fit(size_t asize);
 
+// 가용 연결 리스트용
+static void delete_free(void *bp);
+static void insert_free(void *bp);
 /*
  * mm_init - initialize the malloc package.
  */
 
 int mm_init(void)
 {
+    // printf("SIZE_T_SIZE : %zu\n", SIZE_T_SIZE);
     if((heap_listp = mem_sbrk(4*WSIZE)) == (void *)-1) // heap 공간 초기 세팅 패딩, 프롤로그, 에필로그 세팅 -> 다만 안될경우에는 -1반환
         return -1;
     PUT(heap_listp, 0);                            // 정렬 패딩
@@ -103,6 +118,7 @@ int mm_init(void)
     PUT(heap_listp + (2*WSIZE), PACK(DSIZE, 1));   // 프롤로그 푸터
     PUT(heap_listp + (3*WSIZE), PACK(0, 1));       // 에필로그 헤더
     heap_listp += (2*WSIZE);                       // 프롤로그 블록의 payload 위치로 이동
+    free_listp = NULL;
     
     if(extend_heap(CHUNKSIZE/WSIZE)==NULL) // 힙 공간 늘리기 (4KB의 워드 개수 만큼)
         return -1; // 실패시 반환
@@ -117,10 +133,35 @@ static void *extend_heap(size_t words) { // 워드 개수 인자로 들어감
     size = (words % 2) ? (words+1)*WSIZE : words*WSIZE; // 방어코드인데 쓸모없음 어짜피 여기서는 짝수만 나와서
     if ((long)(bp = mem_sbrk(size)) == -1) return NULL; // 힙공간 늘리기 실패시 NULL 반환
 
+    // 새 가용 블록
     PUT(HDRP(bp), PACK(size, 0)); 
     PUT(FTRP(bp), PACK(size, 0));
+
+    // 에필로그
     PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1));
     return coalesce(bp);
+}
+
+// 가용 연결 리스트
+static void insert_free(void *bp)
+{
+    PUT_PRED(bp, NULL);
+    PUT_SUCC(bp, free_listp);
+    // 가용 연결 리스트 헤더 업데이트
+    if(free_listp != NULL) 
+        PUT_PRED(free_listp, bp);
+    free_listp = bp;
+}
+
+static void delete_free(void *bp)
+{
+    // bp가 헤드가 아닐떄
+    if(READ_PRED(bp)!=NULL) 
+        PUT_PRED(READ_PRED(bp), READ_SUCC(bp));
+    else
+        PUT_PRED(free_listp, READ_SUCC(bp));
+    if(READ_SUCC(bp) != NULL)
+        PUT_SUCC(READ_SUCC(bp), READ_PRED(bp));
 }
 
 // mm_free 블록을 반환하고 경계태그 연결을 사용해서 상수 시간에 인접 가용 블록들과 통합함
@@ -150,7 +191,43 @@ static void *coalesce(void *bp)
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
     }
+    insert_free(bp);
     return bp;
+}
+
+// 블록 분활 판단후 배치함
+static void place(void *bp, size_t asize)
+{
+    size_t csize = GET_SIZE(HDRP(bp)); // 찾은 블록의 크기
+
+    if((csize - asize)>=(2*DSIZE)){ // 찾은 블록 크기 - 요청한 크기를 했을때 남는 양이 최소블록 크기보다 크면 분활
+        PUT(HDRP(bp), PACK(asize, 1));
+        PUT(FTRP(bp), PACK(asize, 1));
+        bp = NEXT_BLKP(bp);
+        PUT(HDRP(bp), PACK(csize - asize, 0));
+        PUT(FTRP(bp), PACK(csize - asize, 0));
+    }else{ // 최소 블록 크기가 분활했을때 안나오면 그냥 블록 다씀
+        PUT(HDRP(bp), PACK(csize, 1));
+        PUT(FTRP(bp), PACK(csize, 1));
+    }
+}
+
+// best-fit 방식
+static void *find_fit(size_t asize)
+{
+    void *bp;
+    void *find_bp = NULL;
+    for(bp = heap_listp; GET_SIZE(HDRP(bp))>0; bp=NEXT_BLKP(bp)){
+        size_t cursize = GET_SIZE(HDRP(bp));
+        if(!GET_ALLOC(HDRP(bp)) && cursize>=asize){
+            if(cursize==asize)
+                return bp;
+            if(find_bp==NULL || (GET_SIZE(HDRP(find_bp))>GET_SIZE(HDRP(bp)))){
+                find_bp = bp;
+            }
+        }
+    }
+    return find_bp;
 }
 
 /*
@@ -195,34 +272,6 @@ void *mm_malloc(size_t size)
     return bp;
 }
 
-// 블록 분활 판단후 배치함
-static void place(void *bp, size_t asize)
-{
-    size_t csize = GET_SIZE(HDRP(bp)); // 찾은 블록의 크기
-
-    if((csize - asize)>=(2*DSIZE)){ // 찾은 블록 크기 - 요청한 크기를 했을때 남는 양이 최소블록 크기보다 크면 분활
-        PUT(HDRP(bp), PACK(asize, 1));
-        PUT(FTRP(bp), PACK(asize, 1));
-        bp = NEXT_BLKP(bp);
-        PUT(HDRP(bp), PACK(csize - asize, 0));
-        PUT(FTRP(bp), PACK(csize - asize, 0));
-    }else{ // 최소 블록 크기가 분활했을때 안나오면 그냥 블록 다씀
-        PUT(HDRP(bp), PACK(csize, 1));
-        PUT(FTRP(bp), PACK(csize, 1));
-    }
-}
-
-static void *find_fit(size_t asize)
-{
-    void *bp;
-    for(bp = heap_listp; GET_SIZE(HDRP(bp))>0; bp=NEXT_BLKP(bp)){
-        if(!GET_ALLOC(HDRP(bp)) && (GET_SIZE(HDRP(bp)))>=asize){
-            return bp;
-        }
-    }
-    return NULL;
-}
-
 /*
  * mm_free - Freeing a block does nothing.
  */
@@ -235,23 +284,28 @@ void mm_free(void *ptr) // free할 위치가 인자로 들어옴
     coalesce(ptr); // 주위 블록 확인
 }
 
-
 /*
  * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
  */
 void *mm_realloc(void *ptr, size_t size)
 {
-    void *oldptr = ptr;
     void *newptr;
     size_t copySize;
 
     newptr = mm_malloc(size);
     if (newptr == NULL)
         return NULL;
-    copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
+    copySize = GET_SIZE(HDRP(ptr)) - DSIZE;
     if (size < copySize)
         copySize = size;
-    memcpy(newptr, oldptr, copySize);
-    mm_free(oldptr);
+    memcpy(newptr, ptr, copySize);
+    mm_free(ptr);
+    
     return newptr;
 }
+
+// copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
+    // 1. 줄이는 경우(size가 더 작음) - 새로할당 X, 그 블록을 그대로 두거나 남는 부분만 분활
+    // 2. 늘리는 경우, 뒤 블록이 가용이고, 합치면 충분 - 뒤 블록과 합쳐서 같은 주소 유지
+    // 3. 늘리는 경우, 이 블록이 힙 끝 - 힙을 늘려서 같은 주소 유지
+    // 4. 그외 - 지금처럼 새로 할당, 복사, 해제
