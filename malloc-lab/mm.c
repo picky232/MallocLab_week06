@@ -82,6 +82,8 @@ team_t team = {
     헤더 | pred(이전블록 포인터) | succ(다음블록 포인터) | 패딩 | 푸터 
     처럼 쓸꺼여서 아래와 같은 매크로 사용함
 */
+#define MINBLOCK ALIGN(2*WSIZE + 2* sizeof(void *)) // 최소 블록 크기 (header+footer) + (PRED, SUCC 포인터 2개) = 8 + 16
+
 #define PUT_PRED(bp, val) (*(void **)(bp)) = val // void* 로 캐스팅된 bp에 포인터를 담을꺼니까 이중 포인터로 캐스팅 함. 그리고 참조로 담은 주소 데이터가 반환됨
 #define PUT_SUCC(bp, val) (*(void **)((char *)(bp)+sizeof(void *))) = val
 
@@ -118,7 +120,7 @@ int mm_init(void)
     PUT(heap_listp + (2*WSIZE), PACK(DSIZE, 1));   // 프롤로그 푸터
     PUT(heap_listp + (3*WSIZE), PACK(0, 1));       // 에필로그 헤더
     heap_listp += (2*WSIZE);                       // 프롤로그 블록의 payload 위치로 이동
-    free_listp = NULL;
+    free_listp = NULL; // trace 마다 초기화
     
     if(extend_heap(CHUNKSIZE/WSIZE)==NULL) // 힙 공간 늘리기 (4KB의 워드 개수 만큼)
         return -1; // 실패시 반환
@@ -148,7 +150,7 @@ static void insert_free(void *bp)
     PUT_PRED(bp, NULL);
     PUT_SUCC(bp, free_listp);
     // 가용 연결 리스트 헤더 업데이트
-    if(free_listp != NULL) 
+    if(free_listp != NULL)
         PUT_PRED(free_listp, bp);
     free_listp = bp;
 }
@@ -157,11 +159,14 @@ static void delete_free(void *bp)
 {
     // bp가 헤드가 아닐떄
     if(READ_PRED(bp)!=NULL) 
-        PUT_PRED(READ_PRED(bp), READ_SUCC(bp));
+        // PUT_PRED(READ_PRED(bp), READ_SUCC(bp)); 왜 아닌지 찾아보셈
+        PUT_SUCC(READ_PRED(bp), READ_SUCC(bp));
     else
-        PUT_PRED(free_listp, READ_SUCC(bp));
+        // PUT_PRED(free_listp, READ_SUCC(bp)); 왜 아닌지 찾아보셈
+        free_listp = READ_SUCC(bp);
     if(READ_SUCC(bp) != NULL)
-        PUT_SUCC(READ_SUCC(bp), READ_PRED(bp));
+        // PUT_SUCC(READ_SUCC(bp), READ_PRED(bp)); 얘도
+        PUT_PRED(READ_SUCC(bp), READ_PRED(bp));
 }
 
 // mm_free 블록을 반환하고 경계태그 연결을 사용해서 상수 시간에 인접 가용 블록들과 통합함
@@ -170,43 +175,37 @@ static void *coalesce(void *bp)
     size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp))); // 할당 여부 확인
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp))); // 할당 여부 확인
     size_t size = GET_SIZE(HDRP(bp)); // bp 블록 크기
+    void *start = bp; // 병합후 블록 포인터
 
-    if(prev_alloc && next_alloc){ // 둘다 할당된거면 bp 반환
-        return bp;
+    if(!prev_alloc){
+        start = PREV_BLKP(bp);
+        delete_free(start);
+        size += GET_SIZE(HDRP(start));
     }
-    else if(prev_alloc && !next_alloc){ // 다음 블록이 가용 블록이면 합침
-        size += GET_SIZE(HDRP(NEXT_BLKP(bp)));  
-        PUT(HDRP(bp), PACK(size, 0)); // 헤더 재설정
-        PUT(FTRP(bp), PACK(size, 0)); // 푸터 재설정
+    if(!next_alloc){
+        delete_free(NEXT_BLKP(bp));
+        size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
     }
-    else if(!prev_alloc && next_alloc){ // 이전 블록이 가용 블록이면 합침
-        size += GET_SIZE(HDRP(PREV_BLKP(bp))); 
-        PUT(FTRP(bp), PACK(size, 0));
-        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
-        bp = PREV_BLKP(bp);
-    }
-    else{ // 양옆 모두 가용 블록이면 둘다 합침 현재블록이랑 (현재 + 이전 + 다음)
-        size += GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(FTRP(NEXT_BLKP(bp)));
-        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
-        PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
-        bp = PREV_BLKP(bp);
-    }
-    insert_free(bp);
-    return bp;
+    PUT(HDRP(start), PACK(size, 0));
+    PUT(FTRP(start), PACK(size, 0));
+    insert_free(start);
+    return start;
 }
 
 // 블록 분활 판단후 배치함
 static void place(void *bp, size_t asize)
 {
     size_t csize = GET_SIZE(HDRP(bp)); // 찾은 블록의 크기
+    delete_free(bp); // 할당되는 블록은 리스트에서 제거 (헤더 크기를 바꾸기 전에)
 
-    if((csize - asize)>=(2*DSIZE)){ // 찾은 블록 크기 - 요청한 크기를 했을때 남는 양이 최소블록 크기보다 크면 분활
+    if((csize - asize)>=(MINBLOCK)){ // 찾은 블록 크기 - 요청한 크기를 했을때 남는 양이 최소블록 크기보다 크면 분활
         PUT(HDRP(bp), PACK(asize, 1));
         PUT(FTRP(bp), PACK(asize, 1));
         bp = NEXT_BLKP(bp);
         PUT(HDRP(bp), PACK(csize - asize, 0));
         PUT(FTRP(bp), PACK(csize - asize, 0));
-    }else{ // 최소 블록 크기가 분활했을때 안나오면 그냥 블록 다씀
+        insert_free(bp); // 남은 조각의 다음 블록은 항상 할당 상태라 coalesce 불필요
+    }else{ // 최소 블록 크기안되면 그냥 통채로 할당
         PUT(HDRP(bp), PACK(csize, 1));
         PUT(FTRP(bp), PACK(csize, 1));
     }
@@ -217,13 +216,13 @@ static void *find_fit(size_t asize)
 {
     void *bp;
     void *find_bp = NULL;
-    for(bp = heap_listp; GET_SIZE(HDRP(bp))>0; bp=NEXT_BLKP(bp)){
+    for(bp = free_listp; bp!=NULL; bp=READ_SUCC(bp)){
         size_t cursize = GET_SIZE(HDRP(bp));
-        if(!GET_ALLOC(HDRP(bp)) && cursize>=asize){
-            if(cursize==asize)
+        if(cursize>=asize){
+            if(cursize==asize) // 딱맞는 크기
                 return bp;
             if(find_bp==NULL || (GET_SIZE(HDRP(find_bp))>GET_SIZE(HDRP(bp)))){
-                find_bp = bp;
+                find_bp = bp;  // 지금까지 가장 작은 후보 갱신
             }
         }
     }
@@ -255,8 +254,8 @@ void *mm_malloc(size_t size)
     if(size == 0){
         return NULL;
     }
-    if(size <= DSIZE) asize = 2*DSIZE; // 블록 크기 최소 크기
-    else asize = DSIZE * ((size + (DSIZE) + (DSIZE-1)) / DSIZE ); // 최소 크기보다 클때 더블워드 정렬해줌
+    asize = DSIZE * ((size + DSIZE + (DSIZE-1)) / DSIZE); 
+    asize = MAX(asize, MINBLOCK); // MAX(블록 크기 최소 크기, 요청 사이즈)
 
     // free 목록중에서 알맞는 곳 찾아서 할당함
     if((bp = find_fit(asize)) != NULL){ 

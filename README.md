@@ -72,10 +72,20 @@ malloc_lab_docker/
 ├── malloc-lab
 │   ├── short1-bal.rep          # 테스트 케이스
 │   ├── Makefile                # 과제를 컴파일하고 테스트하기 위한 파일
-│   ├── test                    # (추가) 빌드 + 테스트 + 결과 막대그래프 출력 명령
+│   ├── test                    # (추가) 빌드 + 테스트 + 결과 막대그래프 출력 명령 (./test mm-xxx.c 로 구현 선택)
+│   ├── mm-explicit.c           # (추가) 명시적 가용 리스트(이중 연결) 구현
+│   ├── mm-segregated.c         # (추가) 분리 가용 리스트(segregated fits) 구현
+│   ├── mm-complete.c           # (추가) 최종 구현: 분리 리스트 + 푸터 제거 + 적응형 배치 + realloc 제자리 확장 (98/100)
+│   ├── test-explicit           # (추가) mm-explicit.c 전용 빌드/실행 스크립트
+│   ├── traces_gen/             # (추가) 일반화 검증용 trace 41개 (tools/gen_traces.py 로 생성)
+│   ├── traces_official/        # (추가) 공식 11개 trace 심볼릭 링크 (compare.sh 용)
 │   ├── tools/                  # (추가) test 명령이 사용하는 보조 스크립트
 │   │   ├── parse.awk           #   mdriver 출력 해석
-│   │   └── render.awk          #   막대그래프 출력
+│   │   ├── progress.sh         #   실행 중 진행률 바
+│   │   ├── render.awk          #   막대그래프 출력
+│   │   ├── gen_traces.py       #   (추가) 일반화 검증용 trace 생성기
+│   │   └── compare.sh          #   (추가) 여러 구현을 같은 trace 묶음에서 패밀리별로 비교
+│   ├── improvement-plan.md     # (추가) mm.c 개선 계획 (이용률/처리량 단계별)
 │   └── README.md               # malloc-lab 과제 설명
 │
 └── README.md  # 설치 및 사용법 설명 문서
@@ -118,6 +128,18 @@ cd malloc-lab
 ./test -h               # 도움말
 ```
 
+**mm 구현 파일을 골라서 테스트하기**: 첫 번째 인자가 `.c` 파일(또는 `mm` 으로 시작하는 이름)이면 `mm.c` 대신 그 소스로 빌드해서 테스트합니다. 아무것도 지정하지 않은 `./test` 는 지금처럼 `mm.c` 를 실행합니다. 뒤에 trace 이름을 붙이면 그 trace 만 실행합니다.
+
+```bash
+./test                              # mm.c (기본)
+./test mm-segregated.c              # 분리 가용 리스트 구현, 기본 trace 전체
+./test mm-segregated                # .c 는 생략 가능 (mm 으로 시작하는 이름만)
+./test mm-explicit.c short1-bal     # 명시적 가용 리스트 구현, trace 하나만
+MM_DEBUG=1 ./test mm-segregated.c   # 힙/가용 리스트 일관성 검사 켜고 실행 (느림)
+```
+
+지정한 소스는 `mdriver-<이름>` (예: `mdriver-mm-segregated`)으로 따로 빌드하므로 `mm.c` 와 `mdriver` 는 건드리지 않습니다.
+
 > 쉘에는 `test` 라는 내장 명령이 이미 있어서 `test short1-bal` 로 치면 동작하지 않습니다. 반드시 **`./test`** 로 실행하세요.
 
 출력 예 (이용률 막대: 80% 이상 초록, 50% 이상 노랑, 그 미만 빨강):
@@ -135,6 +157,8 @@ cd malloc-lab
 - 막대는 기본적으로 `━`(채움) / `─`(빈 부분)로 그립니다. 칸 전체를 채우는 `█` 는 터미널(특히 VSCode)에서 위아래 줄의 막대가 서로 붙어 하나의 덩어리처럼 보여서 기본값에서 뺐습니다.
 - 예전 모양(`█ ░`)을 쓰려면 `MM_BAR=block ./test` 로 실행하세요.
 
+- 터미널에서 실행하면 trace를 하나씩 돌리는 동안 **진행률 바**(`테스트 중 ━━━───  6/11  random2-bal.rep`)가 같은 줄에서 갱신되고, 끝나면 `테스트 완료 ━━━━ 11/11` 줄로 바뀌어 남은 채 그 아래에 결과가 나옵니다. 진행률을 보려고 trace를 하나씩 먼저 돌린 다음, 점수는 `mdriver` 전체 실행 결과를 그대로 쓰기 때문에 전체 실행 시간은 약 2배가 됩니다. 크래시한 trace가 있으면 진행률 줄에 `✘ 크래시 N` 이 표시됩니다.
+- 파이프나 파일로 출력하거나 `NO_COLOR=1` 이면 진행률은 나오지 않습니다. 터미널에서도 끄려면 `MM_PROGRESS=0 ./test` 로 실행하세요.
 - **정확성 오류**가 있으면 어떤 trace의 몇 번째 줄에서 났는지 `오류` 항목으로 보여 줍니다.
 - **세그폴트**로 `mdriver` 가 죽으면 trace를 하나씩 따로 실행해서 크래시한 trace를 표시하고, `gdb` 로 확인하는 방법을 안내합니다.
 - 종료 코드는 모두 통과하면 `0`, 오류/크래시가 있으면 `1`, 없는 파일을 지정하면 `2` 입니다.

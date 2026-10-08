@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# test-explicit - mm-explicit.c(명시적 가용 리스트)를 mdriver-explicit 로 빌드하고 실행
+# 기존 mm.c / Makefile / mdriver 는 건드리지 않는다. 컨테이너(Linux) 안에서 실행할 것.
+#
+# 사용법:
+#   ./test-explicit            전체 trace
+#   ./test-explicit -v         상세 출력 (mdriver 옵션을 그대로 전달)
+#   MM_DEBUG=1 ./test-explicit 힙/가용 리스트 일관성 검사 켜고 실행 (느림)
+set -eu
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+DEFS=""
+if [ "${MM_DEBUG:-0}" = 1 ]; then DEFS="-DMM_DEBUG"; fi
+
+gcc -Wall -O2 -g $DEFS -o mdriver-explicit \
+    mdriver.c mm-explicit.c memlib.c fsecs.c fcyc.c clock.c ftimer.c
+./mdriver-explicit "$@"

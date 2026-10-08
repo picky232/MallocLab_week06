@@ -119,7 +119,7 @@ END {
         for (i = 1; i <= nrow; i++) if (r_valid[i] == "crash") { first = i; break }
         print ""
         print YLW "  디버깅 방법 - 가장 먼저 크래시한 trace 하나로 확인" RST
-        print DIM "    gdb --args ./mdriver -v -f traces/" r_name[first] RST
+        print DIM "    gdb --args " ((driver != "") ? driver : "./mdriver") " -v -f traces/" r_name[first] RST
         print DIM "      (gdb) run   →   (gdb) bt   →   (gdb) frame 0   →   (gdb) info locals" RST
         if (ncrash > 1) print DIM "    (크래시한 trace는 모두 " ncrash "개)" RST
     }
